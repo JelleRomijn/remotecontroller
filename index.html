@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket Chat</title>
+  <style>
+    body { font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 0 16px; }
+    #messages { list-style: none; padding: 10px; margin: 0 0 12px; min-height: 200px; border: 1px solid #ddd; border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
+    #messages li { padding: 6px 10px; border-radius: 12px; max-width: 80%; word-break: break-word; }
+    .msg-self  { background: #0084ff; color: #fff; margin-left: auto; text-align: right; }
+    .msg-other { background: #e4e6eb; color: #000; }
+    .msg-ping  { background: #fff3cd; color: #856404; font-style: italic; text-align: center; max-width: 100%; }
+    #controls  { display: flex; gap: 8px; }
+    #messageInput { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid #ccc; }
+    button { padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer; background: #0084ff; color: #fff; }
+    #pingButton { background: #f0a500; }
+    #status { font-size: 12px; color: #888; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <div id="status">Verbinden...</div>
+  <ul id="messages"></ul>
+  <div id="controls">
+    <input type="text" id="messageInput" placeholder="Typ een bericht..." />
+    <button id="sendButton">Verstuur</button>
+    <button id="pingButton">Ping!</button>
+  </div>
+
+  <script>
+    const socket = new WebSocket('ws://localhost:8080');
+    const messageInput = document.getElementById('messageInput');
+    const sendButton = document.getElementById('sendButton');
+    const pingButton = document.getElementById('pingButton');
+    const messages = document.getElementById('messages');
+    const status = document.getElementById('status');
+
+    let myId = null;
+
+    // --- Web Audio ping sound ---
+    function playPing() {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      gain.gain.setValueAtTime(0.4, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.6);
+    }
+
+    function addMessage(text, cssClass) {
+      const li = document.createElement('li');
+      li.textContent = text;
+      li.className = cssClass;
+      messages.appendChild(li);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    socket.addEventListener('open', () => {
+      status.textContent = 'Verbonden';
+    });
+
+    socket.addEventListener('message', event => {
+      let data;
+      try { data = JSON.parse(event.data); } catch { return; }
+
+      if (data.type === 'init') {
+        myId = data.id;
+        status.textContent = `Verbonden (jij bent client ${myId})`;
+        return;
+      }
+
+      if (data.type === 'message') {
+        const isSelf = data.from === myId;
+        const label = isSelf ? 'Jij' : `Client ${data.from}`;
+        addMessage(`${label}: ${data.text}`, isSelf ? 'msg-self' : 'msg-other');
+        return;
+      }
+
+      if (data.type === 'ping') {
+        addMessage(`Ping van client ${data.from}!`, 'msg-ping');
+        playPing();
+        return;
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      status.textContent = 'Verbinding verbroken';
+    });
+
+    sendButton.addEventListener('click', sendMessage);
+    messageInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
+
+    function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text) return;
+      socket.send(JSON.stringify({ type: 'message', text }));
+      messageInput.value = '';
+    }
+
+    pingButton.addEventListener('click', () => {
+      socket.send(JSON.stringify({ type: 'ping' }));
+      addMessage('Jij hebt gepingd!', 'msg-ping');
+    });
+  </script>
+</body>
+</html>
