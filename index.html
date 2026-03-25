@@ -1,109 +1,198 @@
 <!DOCTYPE html>
-<html>
+<html lang="nl">
 <head>
-  <title>WebSocket Chat</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pesten</title>
   <style>
-    body { font-family: sans-serif; max-width: 500px; margin: 40px auto; padding: 0 16px; }
-    #messages { list-style: none; padding: 10px; margin: 0 0 12px; min-height: 200px; border: 1px solid #ddd; border-radius: 8px; display: flex; flex-direction: column; gap: 6px; }
-    #messages li { padding: 6px 10px; border-radius: 12px; max-width: 80%; word-break: break-word; }
-    .msg-self  { background: #0084ff; color: #fff; margin-left: auto; text-align: right; }
-    .msg-other { background: #e4e6eb; color: #000; }
-    .msg-ping  { background: #fff3cd; color: #856404; font-style: italic; text-align: center; max-width: 100%; }
-    #controls  { display: flex; gap: 8px; }
-    #messageInput { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid #ccc; }
-    button { padding: 8px 14px; border: none; border-radius: 8px; cursor: pointer; background: #0084ff; color: #fff; }
-    #pingButton { background: #f0a500; }
-    #status { font-size: 12px; color: #888; margin-bottom: 8px; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a472a; font-family: sans-serif; color: white; min-height: 100vh; padding: 16px; }
+
+    /* --- Lobby --- */
+    #lobby { max-width: 500px; margin: 0 auto; }
+    h1 { text-align: center; font-size: 1.6rem; margin-bottom: 20px; }
+    input { width: 100%; padding: 10px; border-radius: 8px; border: none; font-size: 1rem; margin-bottom: 10px; color: #333; }
+    button { width: 100%; padding: 12px; border-radius: 8px; border: none; font-size: 1rem; cursor: pointer; font-weight: bold; margin-bottom: 8px; }
+    .btn-groen { background: #27ae60; color: white; }
+    .btn-blauw { background: #2980b9; color: white; }
+    .btn-rood  { background: #e74c3c; color: white; }
+    #wachtkamer { background: rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+
+    #scherm-keuze { text-align: center; }
+    #scherm-keuze p { margin-bottom: 16px; opacity: 0.75; font-size: 0.95rem; }
+    #scherm-keuze-btns { display: flex; gap: 10px; }
+    #scherm-keuze-btns button { flex: 1; padding: 22px 12px; font-size: 1rem; border-radius: 12px; margin-bottom: 0; }
+
+    #speler-lobby { display: none; }
+
+    /* --- Speler view --- */
+    #spel { display: none; max-width: 500px; margin: 0 auto; }
+    #stapel-gebied { display: flex; justify-content: center; gap: 20px; margin-bottom: 20px; align-items: center; }
+    .kaart {
+      width: 60px; height: 90px; border-radius: 8px; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; font-size: 1.1rem; font-weight: bold;
+      background: white; color: #333; border: 2px solid #ccc; cursor: pointer; user-select: none;
+      transition: transform 0.1s;
+    }
+    .kaart:active { transform: scale(0.95); }
+    .kaart.rood { color: #e74c3c; }
+    .kaart.speelbaar { border-color: #27ae60; box-shadow: 0 0 10px #27ae60; }
+    .kaart.dek-kaart { background: #2c3e50; color: white; font-size: 0.8rem; }
+    #hand { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+    #beurt-banner {
+      text-align: center; padding: 8px; border-radius: 8px; margin-bottom: 12px;
+      font-weight: bold; font-size: 1rem;
+    }
+    .jouw-beurt { background: #27ae60; }
+    .wacht-beurt { background: rgba(255,255,255,0.15); }
+    #spelers-lijst { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .speler-badge { background: rgba(255,255,255,0.15); border-radius: 20px; padding: 4px 12px; font-size: 0.8rem; }
+    .speler-badge.actief { background: #f39c12; color: #333; font-weight: bold; }
+    #melding { text-align: center; color: #f39c12; font-size: 0.9rem; margin-bottom: 8px; min-height: 20px; }
+
+    /* --- Host / Kijkscherm --- */
+    #host-view { display: none; max-width: 640px; margin: 0 auto; }
+
+    .host-header {
+      display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;
+    }
+    .host-header h1 { font-size: 1.3rem; font-weight: bold; text-align: left; margin-bottom: 0; }
+    #host-spelers-count { font-size: 0.9rem; opacity: 0.65; }
+
+    .host-spelers {
+      display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px;
+    }
+    .host-speler-box {
+      background: rgba(255,255,255,0.12); border-radius: 10px; padding: 14px 18px;
+      text-align: center; min-width: 84px;
+    }
+    .host-speler-box.actief { background: #e67e22; }
+    .host-speler-naam { font-size: 0.75rem; opacity: 0.85; margin-bottom: 4px; }
+    .host-speler-aantal { font-size: 2.4rem; font-weight: bold; line-height: 1; }
+    .host-speler-label { font-size: 0.7rem; opacity: 0.65; margin-top: 2px; }
+    .host-speler-beurt {
+      font-size: 0.65rem; background: rgba(0,0,0,0.25); border-radius: 4px;
+      padding: 2px 8px; margin-top: 6px; display: inline-block;
+    }
+
+    .host-midden {
+      display: flex; align-items: flex-end; justify-content: center; gap: 16px; margin-bottom: 24px;
+    }
+    .host-kaart-groep { text-align: center; }
+    .host-kaart-label { font-size: 0.75rem; opacity: 0.65; margin-bottom: 8px; }
+
+    .host-dek-kaart {
+      width: 88px; height: 128px; background: #1e3a5c; border-radius: 10px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 6px; border: 2px solid #2c5080;
+    }
+    .host-dek-icon { font-size: 2.2rem; }
+    .host-dek-count { font-size: 0.78rem; font-weight: bold; opacity: 0.85; }
+
+    .host-pijl { font-size: 1.4rem; padding-bottom: 52px; opacity: 0.55; }
+
+    .host-stapel-kaart {
+      width: 88px; height: 128px; background: white; border-radius: 10px;
+      position: relative; border: 2px solid #ddd;
+      display: flex; align-items: center; justify-content: center;
+      color: #333;
+    }
+    .host-stapel-kaart.rood { color: #e74c3c; }
+    .kaart-hoek {
+      position: absolute; font-size: 0.78rem; font-weight: bold;
+      line-height: 1.2; text-align: center; color: inherit;
+    }
+    .kaart-hoek.links-boven { top: 6px; left: 8px; }
+    .kaart-hoek.rechts-onder { bottom: 6px; right: 8px; transform: rotate(180deg); }
+    .kaart-midden-kleur { font-size: 2.6rem; }
+
+    .host-onderkant {
+      background: rgba(255,255,255,0.07); border-radius: 12px; padding: 16px 20px; text-align: center;
+    }
+    .host-status-tekst { font-size: 0.9rem; opacity: 0.8; margin-bottom: 14px; }
+    .host-verborgen-kaarten {
+      display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+      margin-bottom: 10px; min-height: 75px; align-items: center;
+    }
+    .host-verborgen-kaart {
+      width: 50px; height: 75px; background: rgba(255,255,255,0.12);
+      border-radius: 6px; border: 1px solid rgba(255,255,255,0.2);
+    }
+    .host-caption { font-size: 0.72rem; opacity: 0.4; }
   </style>
 </head>
 <body>
-  <div id="status">Verbinden...</div>
-  <ul id="messages"></ul>
-  <div id="controls">
-    <input type="text" id="messageInput" placeholder="Typ een bericht..." />
-    <button id="sendButton">Verstuur</button>
-    <button id="pingButton">Ping!</button>
+
+<!-- Lobby -->
+<div id="lobby">
+  <h1>Pesten</h1>
+
+  <div id="scherm-keuze">
+    <p>Kies jouw scherm:</p>
+    <div id="scherm-keuze-btns">
+      <button class="btn-groen" onclick="kiesScherm('speler')">Meedoen als speler</button>
+      <button class="btn-blauw" onclick="kiesScherm('kijkscherm')">Kijkscherm (host)</button>
+    </div>
   </div>
 
-  <script>
-    const socket = new WebSocket('ws://localhost:8080');
-    const messageInput = document.getElementById('messageInput');
-    const sendButton = document.getElementById('sendButton');
-    const pingButton = document.getElementById('pingButton');
-    const messages = document.getElementById('messages');
-    const status = document.getElementById('status');
+  <div id="speler-lobby">
+    <input id="naam-input" placeholder="Jouw naam" maxlength="16">
+    <button class="btn-groen" onclick="joinSpel()">Meedoen</button>
+    <div id="wachtkamer">
+      <strong>Wachtkamer:</strong>
+      <div id="wachtkamer-lijst">Nog niemand verbonden...</div>
+    </div>
+    <button class="btn-blauw" id="start-btn" onclick="startSpel()" style="display:none">Spel starten</button>
+  </div>
+</div>
 
-    let myId = null;
+<!-- Host / Kijkscherm -->
+<div id="host-view">
+  <div class="host-header">
+    <h1>Pesten</h1>
+    <span id="host-spelers-count">0 spelers verbonden</span>
+  </div>
 
-    // --- Web Audio ping sound ---
-    function playPing() {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      gain.gain.setValueAtTime(0.4, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.6);
-    }
+  <div id="host-spelers" class="host-spelers"></div>
 
-    function addMessage(text, cssClass) {
-      const li = document.createElement('li');
-      li.textContent = text;
-      li.className = cssClass;
-      messages.appendChild(li);
-      messages.scrollTop = messages.scrollHeight;
-    }
+  <div class="host-midden">
+    <div class="host-kaart-groep">
+      <div class="host-kaart-label">Dek</div>
+      <div class="host-dek-kaart">
+        <span class="host-dek-icon">🂠</span>
+        <span id="host-dek-count" class="host-dek-count">-- kaarten</span>
+      </div>
+    </div>
+    <div class="host-pijl">&#8594;</div>
+    <div class="host-kaart-groep">
+      <div class="host-kaart-label">Stapel</div>
+      <div id="host-stapel-kaart" class="host-stapel-kaart">
+        <div class="kaart-hoek links-boven" id="host-hoek-lb"></div>
+        <span id="host-midden-kleur" class="kaart-midden-kleur"></span>
+        <div class="kaart-hoek rechts-onder" id="host-hoek-ro"></div>
+      </div>
+    </div>
+  </div>
 
-    socket.addEventListener('open', () => {
-      status.textContent = 'Verbonden';
-    });
+  <div class="host-onderkant">
+    <div id="host-status-tekst" class="host-status-tekst">Wachten op spelers...</div>
+    <div id="host-verborgen-kaarten" class="host-verborgen-kaarten"></div>
+    <div class="host-caption">kaarten van andere spelers verborgen</div>
+  </div>
+</div>
 
-    socket.addEventListener('message', event => {
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
+<!-- Speler view -->
+<div id="spel">
+  <div id="spelers-lijst"></div>
+  <div id="beurt-banner">Wachten...</div>
+  <div id="melding"></div>
+  <div id="stapel-gebied">
+    <div class="kaart dek-kaart" onclick="pakKaart()">🂠<br>Pak</div>
+    <div id="stapel-top" class="kaart">?</div>
+  </div>
+  <div id="hand"></div>
+</div>
 
-      if (data.type === 'init') {
-        myId = data.id;
-        status.textContent = `Verbonden (jij bent client ${myId})`;
-        return;
-      }
-
-      if (data.type === 'message') {
-        const isSelf = data.from === myId;
-        const label = isSelf ? 'Jij' : `Client ${data.from}`;
-        addMessage(`${label}: ${data.text}`, isSelf ? 'msg-self' : 'msg-other');
-        return;
-      }
-
-      if (data.type === 'ping') {
-        addMessage(`Ping van client ${data.from}!`, 'msg-ping');
-        playPing();
-        return;
-      }
-    });
-
-    socket.addEventListener('close', () => {
-      status.textContent = 'Verbinding verbroken';
-    });
-
-    sendButton.addEventListener('click', sendMessage);
-    messageInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendMessage(); });
-
-    function sendMessage() {
-      const text = messageInput.value.trim();
-      if (!text) return;
-      socket.send(JSON.stringify({ type: 'message', text }));
-      messageInput.value = '';
-    }
-
-    pingButton.addEventListener('click', () => {
-      socket.send(JSON.stringify({ type: 'ping' }));
-      addMessage('Jij hebt gepingd!', 'msg-ping');
-    });
-  </script>
+<script src="client.js"></script>
 </body>
 </html>
