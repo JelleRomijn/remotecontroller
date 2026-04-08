@@ -8,11 +8,28 @@
 </head>
 <body>
 
+<!-- Lobby code badge (altijd zichtbaar als in lobby) -->
+<div id="lobby-badge" style="display:none">
+  Lobby: <strong id="lobby-badge-code"></strong>
+</div>
+
 <!-- Lobby -->
 <div id="lobby">
   <h1>Pesten</h1>
 
-  <div id="scherm-keuze">
+  <div id="lobby-keuze">
+    <p>Kies een lobby:</p>
+    <div id="lobby-keuze-btns">
+      <button class="btn-groen" onclick="maakLobby()">Nieuwe lobby aanmaken</button>
+    </div>
+    <div id="lobby-join-rij">
+      <input id="lobby-code-input" placeholder="Lobby code" maxlength="5" oninput="this.value=this.value.toUpperCase()">
+      <button class="btn-blauw" onclick="joinLobbyMet()">Joinen</button>
+    </div>
+    <div id="lobby-fout" class="melding melding-fout" style="opacity:0"></div>
+  </div>
+
+  <div id="scherm-keuze" style="display:none">
     <p>Kies jouw scherm:</p>
     <div id="scherm-keuze-btns">
       <button class="btn-groen" onclick="kiesScherm('speler')">Meedoen als speler</button>

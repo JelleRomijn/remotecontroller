@@ -22,7 +22,47 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 
-// --- Kaarten aanmaken ---
+// --- Lobbies ---
+const lobbies = new Map();
+
+function maakLobbyId() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let id;
+  do {
+    id = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+
+  } while (lobbies.has(id));
+  return id;
+}
+
+function maakNieuweLobby() {
+  const id = maakLobbyId();
+  lobbies.set(id, {
+    spelers: [],
+    handen: {},
+    dek: [],
+    stapel: [],
+    beurtIndex: 0,
+    gestart: false,
+    extraBeurt: false,
+    moetPakken: 0,
+    moetLaatsteKaartRoepen: new Set(),
+    winnen: {},
+    spelModus: 'pesten',
+    bjGestart: false,
+    bjDekBj: [],
+    bjDealerHand: [],
+    bjSpelerHanden: {},
+    bjStatus: {},
+    bjBeurtIndex: 0,
+    bjFase: 'wachten',
+    bjResultaten: {},
+    spectators: new Set()
+  });
+  return id;
+}
+
+// --- Kaarten ---
 function maakDek() {
   const kleuren = ['♠', '♥', '♦', '♣'];
   const waarden = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
@@ -35,29 +75,7 @@ function maakDek() {
   return dek.sort(() => Math.random() - 0.5);
 }
 
-// --- Spelstatus ---
-let spelers = [];
-let handen = {};
-let dek = [];
-let stapel = [];
-let beurtIndex = 0;
-let gestart = false;
-let extraBeurt = false;
-let moetPakken = 0;
-let moetLaatsteKaartRoepen = new Set(); // ids van spelers met 1 kaart die nog niet geroepen hebben
-let winnen = {}; // naam -> aantal gewonnen potjes (persisteert over potjes)
-
-// --- Blackjack staat ---
-let spelModus = 'pesten'; // 'pesten' | 'blackjack'
-let bjGestart = false;
-let bjDekBj = [];
-let bjDealerHand = [];
-let bjSpelerHanden = {};
-let bjStatus = {}; // 'wachten' | 'bezig' | 'gepast' | 'gebust' | 'blackjack'
-let bjBeurtIndex = 0;
-let bjFase = 'wachten'; // 'wachten' | 'spelen' | 'dealer' | 'klaar'
-let bjResultaten = {};
-
+// --- Blackjack helpers ---
 function bjKaartWaarde(kaart) {
   if (['J', 'Q', 'K'].includes(kaart.waarde)) return 10;
   if (kaart.waarde === 'A') return 11;
@@ -71,126 +89,117 @@ function bjHandWaarde(hand) {
   return totaal;
 }
 
-function stuurBjStatus() {
-  const zichtbaar = bjFase === 'dealer' || bjFase === 'klaar';
-  const dealerHand = bjDealerHand.length > 0
-    ? (zichtbaar ? bjDealerHand : [bjDealerHand[0], { verborgen: true, id: 'verborgen' }])
-    : [];
-  const beurtSpeler = bjFase === 'spelen' ? spelers[bjBeurtIndex]?.id : null;
+// --- Broadcast helpers ---
+function broadcastToLobby(lobbyId, data) {
+  const lobby = lobbies.get(lobbyId);
+  if (!lobby) return;
+  const msg = JSON.stringify(data);
+  lobby.spelers.forEach(s => { if (s.ws.readyState === WebSocket.OPEN) s.ws.send(msg); });
+  lobby.spectators.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
+}
+
+function stuurSpelStatus(lobbyId) {
+  const lobby = lobbies.get(lobbyId);
+  if (!lobby) return;
   const basis = {
-    type: 'bjStatus',
-    fase: bjFase,
-    dealerHand,
-    dealerWaarde: zichtbaar ? bjHandWaarde(bjDealerHand) : null,
-    beurt: beurtSpeler,
-    spelers: spelers.map(s => ({
-      id: s.id,
-      naam: s.naam,
-      status: bjStatus[s.id] || 'wachten',
-      waarde: bjHandWaarde(bjSpelerHanden[s.id] || []),
-      wins: winnen[s.naam] || 0,
-      resultaat: bjResultaten[s.id] || null
-    }))
+    type: 'spelstatus',
+    stapelTop: lobby.stapel[lobby.stapel.length - 1],
+    beurt: lobby.spelers[lobby.beurtIndex]?.id,
+    spelers: lobby.spelers.map(s => ({
+      id: s.id, naam: s.naam,
+      aantalKaarten: lobby.handen[s.id]?.length,
+      wins: lobby.winnen[s.naam] || 0
+    })),
+    extraBeurt: lobby.extraBeurt,
+    dekAantal: lobby.dek.length,
+    moetLaatsteKaartRoepen: [...lobby.moetLaatsteKaartRoepen]
   };
-  const spelerWsSet = new Set(spelers.map(s => s.ws));
-  spelers.forEach(sp => {
+  lobby.spelers.forEach(sp => {
     if (sp.ws.readyState === WebSocket.OPEN)
-      sp.ws.send(JSON.stringify({ ...basis, hand: bjSpelerHanden[sp.id] || [] }));
+      sp.ws.send(JSON.stringify({
+        ...basis,
+        hand: lobby.handen[sp.id],
+        moetPakken: lobby.spelers[lobby.beurtIndex]?.id === sp.id ? lobby.moetPakken : 0
+      }));
   });
-  wss.clients.forEach(client => {
-    if (!spelerWsSet.has(client) && client.readyState === WebSocket.OPEN)
-      client.send(JSON.stringify({ ...basis, hand: null }));
+  lobby.spectators.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ ...basis, hand: null, moetPakken: lobby.moetPakken }));
   });
 }
 
-function bjVolgendeSpeler() {
-  for (let i = 0; i < spelers.length; i++) {
-    if (bjStatus[spelers[i].id] === 'wachten') {
-      bjBeurtIndex = i;
-      bjStatus[spelers[i].id] = 'bezig';
+function stuurBjStatus(lobbyId) {
+  const lobby = lobbies.get(lobbyId);
+  if (!lobby) return;
+  const zichtbaar = lobby.bjFase === 'dealer' || lobby.bjFase === 'klaar';
+  const dealerHand = lobby.bjDealerHand.length > 0
+    ? (zichtbaar ? lobby.bjDealerHand : [lobby.bjDealerHand[0], { verborgen: true, id: 'verborgen' }])
+    : [];
+  const beurtSpeler = lobby.bjFase === 'spelen' ? lobby.spelers[lobby.bjBeurtIndex]?.id : null;
+  const basis = {
+    type: 'bjStatus',
+    fase: lobby.bjFase,
+    dealerHand,
+    dealerWaarde: zichtbaar ? bjHandWaarde(lobby.bjDealerHand) : null,
+    beurt: beurtSpeler,
+    spelers: lobby.spelers.map(s => ({
+      id: s.id, naam: s.naam,
+      status: lobby.bjStatus[s.id] || 'wachten',
+      waarde: bjHandWaarde(lobby.bjSpelerHanden[s.id] || []),
+      wins: lobby.winnen[s.naam] || 0,
+      resultaat: lobby.bjResultaten[s.id] || null
+    }))
+  };
+  lobby.spelers.forEach(sp => {
+    if (sp.ws.readyState === WebSocket.OPEN)
+      sp.ws.send(JSON.stringify({ ...basis, hand: lobby.bjSpelerHanden[sp.id] || [] }));
+  });
+  lobby.spectators.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ ...basis, hand: null }));
+  });
+}
+
+function bjVolgendeSpeler(lobbyId) {
+  const lobby = lobbies.get(lobbyId);
+  for (let i = 0; i < lobby.spelers.length; i++) {
+    if (lobby.bjStatus[lobby.spelers[i].id] === 'wachten') {
+      lobby.bjBeurtIndex = i;
+      lobby.bjStatus[lobby.spelers[i].id] = 'bezig';
       return true;
     }
   }
   return false;
 }
 
-function bjDealerFase() {
-  bjFase = 'dealer';
-  stuurBjStatus();
-  while (bjHandWaarde(bjDealerHand) < 17 && bjDekBj.length > 0)
-    bjDealerHand.push(bjDekBj.pop());
-  const dealerWaarde = bjHandWaarde(bjDealerHand);
-  const dealerBj = dealerWaarde === 21 && bjDealerHand.length === 2;
-  spelers.forEach(sp => {
-    const spWaarde = bjHandWaarde(bjSpelerHanden[sp.id] || []);
-    const st = bjStatus[sp.id];
+function bjDealerFase(lobbyId) {
+  const lobby = lobbies.get(lobbyId);
+  lobby.bjFase = 'dealer';
+  stuurBjStatus(lobbyId);
+  while (bjHandWaarde(lobby.bjDealerHand) < 17 && lobby.bjDekBj.length > 0)
+    lobby.bjDealerHand.push(lobby.bjDekBj.pop());
+  const dealerWaarde = bjHandWaarde(lobby.bjDealerHand);
+  const dealerBj = dealerWaarde === 21 && lobby.bjDealerHand.length === 2;
+  lobby.spelers.forEach(sp => {
+    const spWaarde = bjHandWaarde(lobby.bjSpelerHanden[sp.id] || []);
+    const st = lobby.bjStatus[sp.id];
     if (st === 'gebust') {
-      bjResultaten[sp.id] = 'verloren';
+      lobby.bjResultaten[sp.id] = 'verloren';
     } else if (st === 'blackjack') {
-      bjResultaten[sp.id] = dealerBj ? 'gelijkspel' : 'blackjack';
-      if (!dealerBj) winnen[sp.naam] = (winnen[sp.naam] || 0) + 1;
+      lobby.bjResultaten[sp.id] = dealerBj ? 'gelijkspel' : 'blackjack';
+      if (!dealerBj) lobby.winnen[sp.naam] = (lobby.winnen[sp.naam] || 0) + 1;
     } else if (dealerWaarde > 21 || spWaarde > dealerWaarde) {
-      bjResultaten[sp.id] = 'gewonnen';
-      winnen[sp.naam] = (winnen[sp.naam] || 0) + 1;
+      lobby.bjResultaten[sp.id] = 'gewonnen';
+      lobby.winnen[sp.naam] = (lobby.winnen[sp.naam] || 0) + 1;
     } else if (spWaarde === dealerWaarde) {
-      bjResultaten[sp.id] = 'gelijkspel';
+      lobby.bjResultaten[sp.id] = 'gelijkspel';
     } else {
-      bjResultaten[sp.id] = 'verloren';
+      lobby.bjResultaten[sp.id] = 'verloren';
     }
   });
-  bjFase = 'klaar';
-  bjGestart = false;
-  stuurBjStatus();
-}
-
-function broadcast(data) {
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN)
-      client.send(JSON.stringify(data));
-  });
-}
-
-function stuurSpelStatus() {
-  const basis = {
-    type: 'spelstatus',
-    stapelTop: stapel[stapel.length - 1],
-    beurt: spelers[beurtIndex]?.id,
-    spelers: spelers.map(s => ({
-      id: s.id,
-      naam: s.naam,
-      aantalKaarten: handen[s.id]?.length,
-      wins: winnen[s.naam] || 0
-    })),
-    extraBeurt,
-    dekAantal: dek.length,
-    moetLaatsteKaartRoepen: [...moetLaatsteKaartRoepen]
-  };
-
-  const spelerWsSet = new Set(spelers.map(s => s.ws));
-
-  spelers.forEach(sp => {
-    if (sp.ws.readyState === WebSocket.OPEN) {
-      sp.ws.send(JSON.stringify({
-        ...basis,
-        hand: handen[sp.id],
-        moetPakken: spelers[beurtIndex]?.id === sp.id ? moetPakken : 0
-      }));
-    }
-  });
-
-  wss.clients.forEach(client => {
-    if (!spelerWsSet.has(client) && client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({
-        ...basis,
-        hand: null,
-        moetPakken
-      }));
-    }
-  });
-}
-
-function volgendeBeurt(stappen = 1) {
-  beurtIndex = (beurtIndex + stappen) % spelers.length;
+  lobby.bjFase = 'klaar';
+  lobby.bjGestart = false;
+  stuurBjStatus(lobbyId);
 }
 
 function kaartMagGespeeld(kaart, top) {
@@ -199,115 +208,154 @@ function kaartMagGespeeld(kaart, top) {
   return kaart.kleur === top.kleur || kaart.waarde === top.waarde;
 }
 
+// --- WebSocket verbindingen ---
 wss.on('connection', (ws) => {
-  const id = Date.now().toString();
+  const id = Date.now().toString() + Math.random().toString(36).slice(2, 6);
+  let lobbyId = null;
   let isSpectator = false;
-
-  ws.send(JSON.stringify({ type: 'modusGekozen', modus: spelModus }));
 
   ws.on('message', (msg) => {
     const data = JSON.parse(msg);
 
+    // Lobby aanmaken of joinen
+    if (data.type === 'maakLobby') {
+      lobbyId = maakNieuweLobby();
+      ws.send(JSON.stringify({ type: 'lobbyAangemaakt', lobbyId }));
+      return;
+    }
+
+    if (data.type === 'joinLobby') {
+      const lid = (data.lobbyId || '').toUpperCase().trim();
+      if (!lobbies.has(lid)) {
+        ws.send(JSON.stringify({ type: 'fout', bericht: `Lobby "${lid}" bestaat niet` }));
+        return;
+      }
+      lobbyId = lid;
+      ws.send(JSON.stringify({ type: 'lobbyGejoint', lobbyId }));
+      ws.send(JSON.stringify({ type: 'modusGekozen', modus: lobbies.get(lobbyId).spelModus }));
+      return;
+    }
+
+    if (!lobbyId) {
+      ws.send(JSON.stringify({ type: 'fout', bericht: 'Kies eerst een lobby' }));
+      return;
+    }
+
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) {
+      ws.send(JSON.stringify({ type: 'fout', bericht: 'Lobby niet gevonden' }));
+      return;
+    }
+
     if (data.type === 'joinSpectator') {
       isSpectator = true;
-      ws.send(JSON.stringify({ type: 'wachtkamer', spelers: spelers.map(s => s.naam) }));
-      ws.send(JSON.stringify({ type: 'modusGekozen', modus: spelModus }));
-      if (spelModus === 'pesten' && gestart) {
+      lobby.spectators.add(ws);
+      ws.send(JSON.stringify({ type: 'wachtkamer', spelers: lobby.spelers.map(s => s.naam) }));
+      ws.send(JSON.stringify({ type: 'modusGekozen', modus: lobby.spelModus }));
+      if (lobby.spelModus === 'pesten' && lobby.gestart) {
         ws.send(JSON.stringify({
           type: 'spelstatus',
-          stapelTop: stapel[stapel.length - 1],
-          beurt: spelers[beurtIndex]?.id,
-          spelers: spelers.map(s => ({ id: s.id, naam: s.naam, aantalKaarten: handen[s.id]?.length, wins: winnen[s.naam] || 0 })),
-          extraBeurt,
-          moetPakken,
-          dekAantal: dek.length,
+          stapelTop: lobby.stapel[lobby.stapel.length - 1],
+          beurt: lobby.spelers[lobby.beurtIndex]?.id,
+          spelers: lobby.spelers.map(s => ({ id: s.id, naam: s.naam, aantalKaarten: lobby.handen[s.id]?.length, wins: lobby.winnen[s.naam] || 0 })),
+          extraBeurt: lobby.extraBeurt,
+          moetPakken: lobby.moetPakken,
+          dekAantal: lobby.dek.length,
           hand: null,
-          moetLaatsteKaartRoepen: [...moetLaatsteKaartRoepen]
+          moetLaatsteKaartRoepen: [...lobby.moetLaatsteKaartRoepen]
         }));
-      } else if (spelModus === 'blackjack' && (bjGestart || bjFase === 'klaar')) {
-        stuurBjStatus();
+      } else if (lobby.spelModus === 'blackjack' && (lobby.bjGestart || lobby.bjFase === 'klaar')) {
+        stuurBjStatus(lobbyId);
       }
+      return;
     }
 
     if (data.type === 'join') {
-      if (gestart || (bjGestart && bjFase === 'spelen')) { ws.send(JSON.stringify({ type: 'fout', bericht: 'Spel al gestart' })); return; }
-      spelers.push({ id, naam: data.naam, ws });
-      handen[id] = [];
-      broadcast({ type: 'wachtkamer', spelers: spelers.map(s => s.naam) });
+      if (lobby.gestart || (lobby.bjGestart && lobby.bjFase === 'spelen')) {
+        ws.send(JSON.stringify({ type: 'fout', bericht: 'Spel al gestart' })); return;
+      }
+      lobby.spelers.push({ id, naam: data.naam, ws });
+      lobby.handen[id] = [];
+      broadcastToLobby(lobbyId, { type: 'wachtkamer', spelers: lobby.spelers.map(s => s.naam) });
       ws.send(JSON.stringify({ type: 'jouwId', id }));
+      return;
     }
 
     if (data.type === 'kiesModus') {
-      if (gestart || (bjGestart && bjFase === 'spelen')) return;
-      spelModus = data.modus === 'blackjack' ? 'blackjack' : 'pesten';
-      broadcast({ type: 'modusGekozen', modus: spelModus });
+      if (lobby.gestart || (lobby.bjGestart && lobby.bjFase === 'spelen')) return;
+      lobby.spelModus = data.modus === 'blackjack' ? 'blackjack' : 'pesten';
+      broadcastToLobby(lobbyId, { type: 'modusGekozen', modus: lobby.spelModus });
+      return;
     }
 
     if (data.type === 'start') {
-      if (spelModus === 'blackjack') {
-        if (spelers.length < 1) { ws.send(JSON.stringify({ type: 'fout', bericht: 'Minimaal 1 speler nodig' })); return; }
-        bjGestart = true;
-        bjFase = 'spelen';
-        bjDekBj = maakDek().filter(k => k.waarde !== 'JOKER').sort(() => Math.random() - 0.5);
-        bjDealerHand = [];
-        bjSpelerHanden = {};
-        bjStatus = {};
-        bjResultaten = {};
-        bjBeurtIndex = 0;
-        spelers.forEach(sp => {
-          bjSpelerHanden[sp.id] = [bjDekBj.pop(), bjDekBj.pop()];
-          bjStatus[sp.id] = bjHandWaarde(bjSpelerHanden[sp.id]) === 21 ? 'blackjack' : 'wachten';
+      if (lobby.spelModus === 'blackjack') {
+        if (lobby.spelers.length < 1) { ws.send(JSON.stringify({ type: 'fout', bericht: 'Minimaal 1 speler nodig' })); return; }
+        lobby.bjGestart = true;
+        lobby.bjFase = 'spelen';
+        lobby.bjDekBj = maakDek().filter(k => k.waarde !== 'JOKER').sort(() => Math.random() - 0.5);
+        lobby.bjDealerHand = [];
+        lobby.bjSpelerHanden = {};
+        lobby.bjStatus = {};
+        lobby.bjResultaten = {};
+        lobby.bjBeurtIndex = 0;
+        lobby.spelers.forEach(sp => {
+          lobby.bjSpelerHanden[sp.id] = [lobby.bjDekBj.pop(), lobby.bjDekBj.pop()];
+          lobby.bjStatus[sp.id] = bjHandWaarde(lobby.bjSpelerHanden[sp.id]) === 21 ? 'blackjack' : 'wachten';
         });
-        bjDealerHand = [bjDekBj.pop(), bjDekBj.pop()];
-        if (!bjVolgendeSpeler()) { bjDealerFase(); return; }
-        stuurBjStatus();
+        lobby.bjDealerHand = [lobby.bjDekBj.pop(), lobby.bjDekBj.pop()];
+        if (!bjVolgendeSpeler(lobbyId)) { bjDealerFase(lobbyId); return; }
+        stuurBjStatus(lobbyId);
         return;
       }
-      if (spelers.length < 2) { ws.send(JSON.stringify({ type: 'fout', bericht: 'Minimaal 2 spelers nodig' })); return; }
-      gestart = true;
-      dek = maakDek();
-      spelers.forEach(sp => { handen[sp.id] = dek.splice(0, 7); });
-      stapel.push(dek.splice(0, 1)[0]);
-      extraBeurt = false;
-      moetPakken = 0;
-      moetLaatsteKaartRoepen = new Set();
-      beurtIndex = 0;
-      stuurSpelStatus();
+      if (lobby.spelers.length < 2) { ws.send(JSON.stringify({ type: 'fout', bericht: 'Minimaal 2 spelers nodig' })); return; }
+      lobby.gestart = true;
+      lobby.dek = maakDek();
+      lobby.spelers.forEach(sp => { lobby.handen[sp.id] = lobby.dek.splice(0, 7); });
+      lobby.stapel.push(lobby.dek.splice(0, 1)[0]);
+      lobby.extraBeurt = false;
+      lobby.moetPakken = 0;
+      lobby.moetLaatsteKaartRoepen = new Set();
+      lobby.beurtIndex = 0;
+      stuurSpelStatus(lobbyId);
+      return;
     }
 
     if (data.type === 'bjHit') {
-      if (!bjGestart || bjFase !== 'spelen') return;
-      if (spelers[bjBeurtIndex]?.id !== id) return;
-      if (bjStatus[id] !== 'bezig') return;
-      bjSpelerHanden[id].push(bjDekBj.pop());
-      const waarde = bjHandWaarde(bjSpelerHanden[id]);
+      if (!lobby.bjGestart || lobby.bjFase !== 'spelen') return;
+      if (lobby.spelers[lobby.bjBeurtIndex]?.id !== id) return;
+      if (lobby.bjStatus[id] !== 'bezig') return;
+      lobby.bjSpelerHanden[id].push(lobby.bjDekBj.pop());
+      const waarde = bjHandWaarde(lobby.bjSpelerHanden[id]);
       if (waarde > 21) {
-        bjStatus[id] = 'gebust';
-        if (!bjVolgendeSpeler()) { bjDealerFase(); return; }
+        lobby.bjStatus[id] = 'gebust';
+        if (!bjVolgendeSpeler(lobbyId)) { bjDealerFase(lobbyId); return; }
       } else if (waarde === 21) {
-        bjStatus[id] = 'gepast';
-        if (!bjVolgendeSpeler()) { bjDealerFase(); return; }
+        lobby.bjStatus[id] = 'gepast';
+        if (!bjVolgendeSpeler(lobbyId)) { bjDealerFase(lobbyId); return; }
       }
-      stuurBjStatus();
+      stuurBjStatus(lobbyId);
+      return;
     }
 
     if (data.type === 'bjStand') {
-      if (!bjGestart || bjFase !== 'spelen') return;
-      if (spelers[bjBeurtIndex]?.id !== id) return;
-      if (bjStatus[id] !== 'bezig') return;
-      bjStatus[id] = 'gepast';
-      if (!bjVolgendeSpeler()) { bjDealerFase(); return; }
-      stuurBjStatus();
+      if (!lobby.bjGestart || lobby.bjFase !== 'spelen') return;
+      if (lobby.spelers[lobby.bjBeurtIndex]?.id !== id) return;
+      if (lobby.bjStatus[id] !== 'bezig') return;
+      lobby.bjStatus[id] = 'gepast';
+      if (!bjVolgendeSpeler(lobbyId)) { bjDealerFase(lobbyId); return; }
+      stuurBjStatus(lobbyId);
+      return;
     }
 
     if (data.type === 'speelKaart') {
-      const speler = spelers.find(s => s.id === id);
-      if (!speler || spelers[beurtIndex].id !== id) return;
+      const speler = lobby.spelers.find(s => s.id === id);
+      if (!speler || lobby.spelers[lobby.beurtIndex].id !== id) return;
 
-      const kaart = handen[id].find(k => k.id === data.kaartId);
-      const top = stapel[stapel.length - 1];
+      const kaart = lobby.handen[id].find(k => k.id === data.kaartId);
+      const top = lobby.stapel[lobby.stapel.length - 1];
 
-      if (moetPakken > 0) {
+      if (lobby.moetPakken > 0) {
         const kanStapelen = kaart && (kaart.waarde === '2' || kaart.waarde === 'JOKER') && kaartMagGespeeld(kaart, top);
         if (!kanStapelen) {
           ws.send(JSON.stringify({ type: 'fout', bericht: 'Je moet kaarten pakken, een 2 opleggen of een joker opleggen!' }));
@@ -318,121 +366,131 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      handen[id] = handen[id].filter(k => k.id !== data.kaartId);
-      stapel.push(kaart);
+      lobby.handen[id] = lobby.handen[id].filter(k => k.id !== data.kaartId);
+      lobby.stapel.push(kaart);
 
-      // Laatste kaart tracking: 1 kaart over = moet roepen
-      if (handen[id].length === 1) {
-        moetLaatsteKaartRoepen.add(id);
+      if (lobby.handen[id].length === 1) {
+        lobby.moetLaatsteKaartRoepen.add(id);
       }
 
-      if (handen[id].length === 0) {
-        winnen[speler.naam] = (winnen[speler.naam] || 0) + 1;
-        broadcast({ type: 'gewonnen', naam: speler.naam, wins: winnen[speler.naam] });
-        gestart = false;
-        moetLaatsteKaartRoepen = new Set();
-        spelers = []; handen = {}; dek = []; stapel = [];
+      if (lobby.handen[id].length === 0) {
+        lobby.winnen[speler.naam] = (lobby.winnen[speler.naam] || 0) + 1;
+        broadcastToLobby(lobbyId, { type: 'gewonnen', naam: speler.naam, wins: lobby.winnen[speler.naam] });
+        lobby.gestart = false;
+        lobby.moetLaatsteKaartRoepen = new Set();
+        lobby.spelers = []; lobby.handen = {}; lobby.dek = []; lobby.stapel = [];
         return;
       }
 
       if (kaart.waarde === 'JOKER') {
-        moetPakken += 5;
-        volgendeBeurt(1);
+        lobby.moetPakken += 5;
+        lobby.beurtIndex = (lobby.beurtIndex + 1) % lobby.spelers.length;
       } else if (kaart.waarde === '2') {
-        moetPakken += 2;
-        volgendeBeurt(1);
+        lobby.moetPakken += 2;
+        lobby.beurtIndex = (lobby.beurtIndex + 1) % lobby.spelers.length;
       } else if (kaart.waarde === '7') {
-        extraBeurt = true;
+        lobby.extraBeurt = true;
       } else if (kaart.waarde === '8') {
-        volgendeBeurt(2);
+        lobby.beurtIndex = (lobby.beurtIndex + 2) % lobby.spelers.length;
       } else if (kaart.waarde === 'A') {
-        volgendeBeurt(2);
+        lobby.beurtIndex = (lobby.beurtIndex + 2) % lobby.spelers.length;
       } else {
-        volgendeBeurt();
+        lobby.beurtIndex = (lobby.beurtIndex + 1) % lobby.spelers.length;
       }
 
-      stuurSpelStatus();
+      stuurSpelStatus(lobbyId);
+      return;
     }
 
     if (data.type === 'pakKaart') {
-      if (spelers[beurtIndex]?.id !== id) return;
-      extraBeurt = false;
-      moetLaatsteKaartRoepen.delete(id);
-      if (dek.length === 0) {
-        const top = stapel.pop();
-        dek = stapel.sort(() => Math.random() - 0.5);
-        stapel = [top];
+      if (lobby.spelers[lobby.beurtIndex]?.id !== id) return;
+      lobby.extraBeurt = false;
+      lobby.moetLaatsteKaartRoepen.delete(id);
+      if (lobby.dek.length === 0) {
+        const top = lobby.stapel.pop();
+        lobby.dek = lobby.stapel.sort(() => Math.random() - 0.5);
+        lobby.stapel = [top];
       }
-      if (moetPakken > 0) {
-        handen[id].push(...dek.splice(0, moetPakken));
-        moetPakken = 0;
+      if (lobby.moetPakken > 0) {
+        lobby.handen[id].push(...lobby.dek.splice(0, lobby.moetPakken));
+        lobby.moetPakken = 0;
       } else {
-        handen[id].push(dek.splice(0, 1)[0]);
+        lobby.handen[id].push(lobby.dek.splice(0, 1)[0]);
       }
-      volgendeBeurt();
-      stuurSpelStatus();
+      lobby.beurtIndex = (lobby.beurtIndex + 1) % lobby.spelers.length;
+      stuurSpelStatus(lobbyId);
+      return;
     }
 
     if (data.type === 'chat') {
-      const naam = spelers.find(s => s.id === id)?.naam || (isSpectator ? 'Kijker' : null);
+      const naam = lobby.spelers.find(s => s.id === id)?.naam || (isSpectator ? 'Kijker' : null);
       if (!naam) return;
       const bericht = String(data.bericht || '').slice(0, 120).trim();
       if (!bericht) return;
-      broadcast({ type: 'chat', naam, bericht });
+      broadcastToLobby(lobbyId, { type: 'chat', naam, bericht });
+      return;
     }
 
     if (data.type === 'laatsTeKaart') {
-      if (!moetLaatsteKaartRoepen.has(id)) return;
-      moetLaatsteKaartRoepen.delete(id);
-      const naam = spelers.find(s => s.id === id)?.naam || 'Onbekend';
-      broadcast({ type: 'laatsTeKaartAangekondigd', naam });
-      stuurSpelStatus();
+      if (!lobby.moetLaatsteKaartRoepen.has(id)) return;
+      lobby.moetLaatsteKaartRoepen.delete(id);
+      const naam = lobby.spelers.find(s => s.id === id)?.naam || 'Onbekend';
+      broadcastToLobby(lobbyId, { type: 'laatsTeKaartAangekondigd', naam });
+      stuurSpelStatus(lobbyId);
+      return;
     }
 
     if (data.type === 'vangLaatsTeKaart') {
       const doelId = data.doelId;
-      if (!doelId || !moetLaatsteKaartRoepen.has(doelId)) return;
-      if (handen[doelId]?.length !== 1) return;
+      if (!doelId || !lobby.moetLaatsteKaartRoepen.has(doelId)) return;
+      if (lobby.handen[doelId]?.length !== 1) return;
 
-      moetLaatsteKaartRoepen.delete(doelId);
+      lobby.moetLaatsteKaartRoepen.delete(doelId);
 
-      // Herstel dek als leeg
-      if (dek.length < 2) {
-        const top = stapel.pop();
-        dek = [...dek, ...stapel].sort(() => Math.random() - 0.5);
-        stapel = [top];
+      if (lobby.dek.length < 2) {
+        const top = lobby.stapel.pop();
+        lobby.dek = [...lobby.dek, ...lobby.stapel].sort(() => Math.random() - 0.5);
+        lobby.stapel = [top];
       }
-      handen[doelId].push(...dek.splice(0, Math.min(2, dek.length)));
+      lobby.handen[doelId].push(...lobby.dek.splice(0, Math.min(2, lobby.dek.length)));
 
-      const doelNaam = spelers.find(s => s.id === doelId)?.naam || 'Onbekend';
-      const vangerNaam = spelers.find(s => s.id === id)?.naam || (isSpectator ? 'Kijker' : 'Onbekend');
-      broadcast({ type: 'gepakt', doelNaam, vangerNaam });
-      stuurSpelStatus();
+      const doelNaam = lobby.spelers.find(s => s.id === doelId)?.naam || 'Onbekend';
+      const vangerNaam = lobby.spelers.find(s => s.id === id)?.naam || (isSpectator ? 'Kijker' : 'Onbekend');
+      broadcastToLobby(lobbyId, { type: 'gepakt', doelNaam, vangerNaam });
+      stuurSpelStatus(lobbyId);
+      return;
     }
   });
 
   ws.on('close', () => {
-    if (isSpectator) return;
-    moetLaatsteKaartRoepen.delete(id);
+    if (!lobbyId) return;
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) return;
 
-    // Blackjack: was het de beurt van de weggevallen speler?
-    if (bjGestart && bjFase === 'spelen' && spelers[bjBeurtIndex]?.id === id) {
-      bjStatus[id] = 'gepast';
-      spelers = spelers.filter(s => s.id !== id);
-      delete bjSpelerHanden[id];
-      if (spelers.length === 0 || !bjVolgendeSpeler()) { bjDealerFase(); return; }
-      stuurBjStatus();
+    if (isSpectator) {
+      lobby.spectators.delete(ws);
       return;
     }
 
-    spelers = spelers.filter(s => s.id !== id);
-    delete handen[id];
-    if (gestart && spelers.length < 2) {
-      broadcast({ type: 'fout', bericht: 'Een speler heeft de verbinding verbroken' });
-      gestart = false;
-      moetLaatsteKaartRoepen = new Set();
+    lobby.moetLaatsteKaartRoepen.delete(id);
+
+    if (lobby.bjGestart && lobby.bjFase === 'spelen' && lobby.spelers[lobby.bjBeurtIndex]?.id === id) {
+      lobby.bjStatus[id] = 'gepast';
+      lobby.spelers = lobby.spelers.filter(s => s.id !== id);
+      delete lobby.bjSpelerHanden[id];
+      if (lobby.spelers.length === 0 || !bjVolgendeSpeler(lobbyId)) { bjDealerFase(lobbyId); return; }
+      stuurBjStatus(lobbyId);
+      return;
+    }
+
+    lobby.spelers = lobby.spelers.filter(s => s.id !== id);
+    delete lobby.handen[id];
+    if (lobby.gestart && lobby.spelers.length < 2) {
+      broadcastToLobby(lobbyId, { type: 'fout', bericht: 'Een speler heeft de verbinding verbroken' });
+      lobby.gestart = false;
+      lobby.moetLaatsteKaartRoepen = new Set();
     } else {
-      broadcast({ type: 'wachtkamer', spelers: spelers.map(s => s.naam) });
+      broadcastToLobby(lobbyId, { type: 'wachtkamer', spelers: lobby.spelers.map(s => s.naam) });
     }
   });
 });

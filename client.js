@@ -9,6 +9,7 @@ let vorigeHandIds = new Set();
 let vorigeStapelTopId = null;
 let spelModus = 'pesten';
 let ongelezeChatBerichten = 0;
+let mijnLobbyId = null;
 
 ws.onopen = () => {
   wsKlaar = true;
@@ -37,6 +38,15 @@ function stuurNaarServer(data) {
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
 
+  if (data.type === 'lobbyAangemaakt' || data.type === 'lobbyGejoint') {
+    mijnLobbyId = data.lobbyId;
+    document.getElementById('lobby-keuze').style.display = 'none';
+    document.getElementById('scherm-keuze').style.display = 'block';
+    document.getElementById('lobby-badge-code').textContent = data.lobbyId;
+    document.getElementById('lobby-badge').style.display = 'block';
+    return;
+  }
+
   if (data.type === 'jouwId') {
     mijnId = data.id;
     document.getElementById('start-btn').style.display = 'block';
@@ -62,7 +72,17 @@ ws.onmessage = (event) => {
   }
 
   if (data.type === 'fout') {
-    toonMelding(data.bericht, 'fout');
+    if (!mijnLobbyId) {
+      const el = document.getElementById('lobby-fout');
+      if (el) {
+        el.textContent = data.bericht;
+        el.style.opacity = '1';
+        clearTimeout(el._timer);
+        el._timer = setTimeout(() => { el.style.opacity = '0'; }, 3000);
+      }
+    } else {
+      toonMelding(data.bericht, 'fout');
+    }
   }
 
   if (data.type === 'gewonnen') {
@@ -108,6 +128,16 @@ ws.onmessage = (event) => {
     toonMelding(`${data.doelNaam} wordt gepakt door ${data.vangerNaam}! +2 kaarten`, 'fout');
   }
 };
+
+function maakLobby() {
+  stuurNaarServer({ type: 'maakLobby' });
+}
+
+function joinLobbyMet() {
+  const code = document.getElementById('lobby-code-input').value.trim().toUpperCase();
+  if (!code) return;
+  stuurNaarServer({ type: 'joinLobby', lobbyId: code });
+}
 
 function kiesScherm(type) {
   schermType = type;
