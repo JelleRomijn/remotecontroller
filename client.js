@@ -1,11 +1,38 @@
 const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-const ws = new WebSocket(`${wsProtocol}//${location.hostname}:3000`);
+const ws = new WebSocket(`${wsProtocol}//${location.host}`);
+
+let wsKlaar = false;
 let mijnId = null;
 let mijnBeurt = false;
 let schermType = null; // 'speler' of 'kijkscherm'
 let vorigeHandIds = new Set();
 let vorigeStapelTopId = null;
 let spelModus = 'pesten';
+let ongelezeChatBerichten = 0;
+
+ws.onopen = () => {
+  wsKlaar = true;
+  console.log('WebSocket verbonden');
+};
+
+ws.onclose = () => {
+  wsKlaar = false;
+  console.log('WebSocket verbinding gesloten');
+};
+
+ws.onerror = (err) => {
+  console.log('WebSocket fout:', err);
+};
+
+function stuurNaarServer(data) {
+  if (!wsKlaar || ws.readyState !== WebSocket.OPEN) {
+    toonMelding('Verbinding nog niet klaar. Probeer opnieuw.', 'fout');
+    return false;
+  }
+
+  ws.send(JSON.stringify(data));
+  return true;
+}
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
@@ -90,7 +117,7 @@ function kiesScherm(type) {
   if (type === 'kijkscherm') {
     document.getElementById('lobby').style.display = 'none';
     document.getElementById('host-view').style.display = 'block';
-    ws.send(JSON.stringify({ type: 'joinSpectator' }));
+    stuurNaarServer({ type: 'joinSpectator' });
   } else {
     document.getElementById('speler-lobby').style.display = 'block';
   }
@@ -167,7 +194,6 @@ function renderSpelerView(data) {
   document.getElementById('lobby').style.display = 'none';
   document.getElementById('spel').style.display = 'block';
 
-  // Beurt banner
   const banner = document.getElementById('beurt-banner');
   if (mijnBeurt) {
     if (data.moetPakken > 0) {
@@ -182,13 +208,11 @@ function renderSpelerView(data) {
     banner.className = 'beurt-banner wacht-beurt';
   }
 
-  // Spelers badges met win count
   document.getElementById('spelers-lijst').innerHTML = data.spelers.map(sp => {
     const winsHtml = sp.wins > 0 ? `<span class="wins-badge">🏆${sp.wins}</span>` : '';
     return `<span class="speler-badge ${sp.id === data.beurt ? 'actief' : ''}">${sp.naam} (${sp.aantalKaarten})${winsHtml}</span>`;
   }).join('');
 
-  // Stapel top
   const top = data.stapelTop;
   const stapelEl = document.getElementById('stapel-top');
   const isGewijzigd = top.id !== vorigeStapelTopId;
@@ -201,7 +225,6 @@ function renderSpelerView(data) {
   }
   vorigeStapelTopId = top.id;
 
-  // Laatste kaart sectie
   const moetRoepen = data.moetLaatsteKaartRoepen || [];
   const ikMoetRoepen = moetRoepen.includes(mijnId);
   const anderenDieRoepenMoeten = moetRoepen.filter(id => id !== mijnId);
@@ -219,7 +242,6 @@ function renderSpelerView(data) {
 
   sectie.style.display = (ikMoetRoepen || anderenDieRoepenMoeten.length > 0) ? 'block' : 'none';
 
-  // Eigen hand
   const handEl = document.getElementById('hand');
   handEl.innerHTML = '';
   data.hand.forEach(kaart => {
@@ -252,30 +274,33 @@ function kaartMagGespeeld(kaart, top) {
 }
 
 function speelKaart(kaartId) {
-  ws.send(JSON.stringify({ type: 'speelKaart', kaartId }));
+  stuurNaarServer({ type: 'speelKaart', kaartId });
 }
 
 function pakKaart() {
   if (!mijnBeurt) return;
-  ws.send(JSON.stringify({ type: 'pakKaart' }));
+  stuurNaarServer({ type: 'pakKaart' });
 }
 
 function joinSpel() {
   const naam = document.getElementById('naam-input').value.trim();
-  if (!naam) { toonMelding('Vul een naam in!', 'fout'); return; }
-  ws.send(JSON.stringify({ type: 'join', naam }));
+  if (!naam) {
+    toonMelding('Vul een naam in!', 'fout');
+    return;
+  }
+  stuurNaarServer({ type: 'join', naam });
 }
 
 function startSpel() {
-  ws.send(JSON.stringify({ type: 'start' }));
+  stuurNaarServer({ type: 'start' });
 }
 
 function roepLaatsteKaart() {
-  ws.send(JSON.stringify({ type: 'laatsTeKaart' }));
+  stuurNaarServer({ type: 'laatsTeKaart' });
 }
 
 function vangSpeler(doelId) {
-  ws.send(JSON.stringify({ type: 'vangLaatsTeKaart', doelId }));
+  stuurNaarServer({ type: 'vangLaatsTeKaart', doelId });
 }
 
 // --- Chat ---
@@ -287,10 +312,9 @@ function toggleChat() {
     document.getElementById('chat-input').focus();
     document.getElementById('chat-badge').style.display = 'none';
     document.getElementById('chat-badge').textContent = '';
+    ongelezeChatBerichten = 0;
   }
 }
-
-let ongelezeChatBerichten = 0;
 
 function voegChatToe(naam, bericht) {
   const berichten = document.getElementById('chat-berichten');
@@ -313,7 +337,7 @@ function stuurChat() {
   const input = document.getElementById('chat-input');
   const bericht = input.value.trim();
   if (!bericht) return;
-  ws.send(JSON.stringify({ type: 'chat', bericht }));
+  stuurNaarServer({ type: 'chat', bericht });
   input.value = '';
 }
 
@@ -332,22 +356,25 @@ function toonMelding(tekst, soort = 'info') {
     clearTimeout(el._timer);
     el._timer = setTimeout(() => {
       el.style.opacity = '0';
-      setTimeout(() => { el.textContent = ''; el.className = 'melding'; }, 300);
+      setTimeout(() => {
+        el.textContent = '';
+        el.className = 'melding';
+      }, 300);
     }, 3000);
   });
 }
 
 // --- Blackjack ---
 function kiesModus(modus) {
-  ws.send(JSON.stringify({ type: 'kiesModus', modus }));
+  stuurNaarServer({ type: 'kiesModus', modus });
 }
 
 function bjHit() {
-  ws.send(JSON.stringify({ type: 'bjHit' }));
+  stuurNaarServer({ type: 'bjHit' });
 }
 
 function bjStand() {
-  ws.send(JSON.stringify({ type: 'bjStand' }));
+  stuurNaarServer({ type: 'bjStand' });
 }
 
 function maakBjKaartEl(kaart) {
@@ -364,11 +391,22 @@ function maakBjKaartEl(kaart) {
 }
 
 function bjStatusLabel(status) {
-  return { wachten: 'wacht...', bezig: 'speelt', gepast: 'gepast', gebust: 'te veel!', blackjack: 'Blackjack!' }[status] || status;
+  return {
+    wachten: 'wacht...',
+    bezig: 'speelt',
+    gepast: 'gepast',
+    gebust: 'te veel!',
+    blackjack: 'Blackjack!'
+  }[status] || status;
 }
 
 function bjResultaatTekst(res) {
-  return { gewonnen: '🏆 Gewonnen!', verloren: '💸 Verloren', gelijkspel: '🤝 Gelijkspel', blackjack: '🃏 Blackjack!' }[res] || res;
+  return {
+    gewonnen: '🏆 Gewonnen!',
+    verloren: '💸 Verloren',
+    gelijkspel: '🤝 Gelijkspel',
+    blackjack: '🃏 Blackjack!'
+  }[res] || res;
 }
 
 function renderBjSpelerView(data) {
@@ -376,14 +414,12 @@ function renderBjSpelerView(data) {
   document.getElementById('spel').style.display = 'none';
   document.getElementById('bj-spel').style.display = 'block';
 
-  // Deler hand
   const dealerHandEl = document.getElementById('bj-dealer-hand');
   dealerHandEl.innerHTML = '';
   (data.dealerHand || []).forEach(k => dealerHandEl.appendChild(maakBjKaartEl(k)));
   document.getElementById('bj-dealer-waarde').textContent =
     data.dealerWaarde !== null ? data.dealerWaarde : '?';
 
-  // Spelers rij
   document.getElementById('bj-spelers-rij').innerHTML = data.spelers.map(sp => {
     const winsHtml = sp.wins > 0 ? `<span class="wins-badge">🏆${sp.wins}</span>` : '';
     const resHtml = sp.resultaat ? `<span class="bj-res-${sp.resultaat}">${bjResultaatTekst(sp.resultaat)}</span>` : '';
@@ -395,14 +431,12 @@ function renderBjSpelerView(data) {
     </div>`;
   }).join('');
 
-  // Eigen hand
   const mijnSpeler = data.spelers.find(s => s.id === mijnId);
   const mijnHandEl = document.getElementById('bj-mijn-hand');
   mijnHandEl.innerHTML = '';
   (data.hand || []).forEach(k => mijnHandEl.appendChild(maakBjKaartEl(k)));
   document.getElementById('bj-mijn-waarde').textContent = mijnSpeler ? mijnSpeler.waarde : '';
 
-  // Beurt banner
   const bannerEl = document.getElementById('bj-beurt-banner');
   if (data.fase === 'klaar') {
     bannerEl.style.display = 'none';
@@ -421,11 +455,9 @@ function renderBjSpelerView(data) {
     bannerEl.style.display = 'block';
   }
 
-  // Actie knoppen
   const isAanBeurt = data.beurt === mijnId && mijnSpeler?.status === 'bezig';
   document.getElementById('bj-actie-btns').style.display = isAanBeurt ? 'flex' : 'none';
 
-  // Resultaat + nieuw potje
   const resultaatEl = document.getElementById('bj-resultaat-sectie');
   if (data.fase === 'klaar' && mijnSpeler?.resultaat) {
     const res = mijnSpeler.resultaat;
