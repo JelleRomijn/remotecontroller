@@ -1,4 +1,5 @@
-const ws = new WebSocket(`ws://${location.host}`);
+const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const ws = new WebSocket(`${wsProtocol}//${location.hostname}:3000`);
 let mijnId = null;
 let mijnBeurt = false;
 let schermType = null; // 'speler' of 'kijkscherm'
@@ -19,9 +20,8 @@ ws.onmessage = (event) => {
     const lijst = document.getElementById('wachtkamer-lijst');
     if (lijst) lijst.textContent = namen.join(', ') || 'Nog niemand...';
     if (schermType === 'kijkscherm') {
-      const tekst = `${namen.length} speler${namen.length !== 1 ? 's' : ''} verbonden`;
-      document.getElementById('host-spelers-count').textContent = tekst;
-      document.getElementById('bj-host-spelers-count').textContent = tekst;
+      document.getElementById('host-spelers-count').textContent =
+        `${namen.length} speler${namen.length !== 1 ? 's' : ''} verbonden`;
     }
   }
 
@@ -89,8 +89,7 @@ function kiesScherm(type) {
 
   if (type === 'kijkscherm') {
     document.getElementById('lobby').style.display = 'none';
-    document.getElementById('host-view').style.display = spelModus === 'pesten' ? 'block' : 'none';
-    document.getElementById('bj-host-view').style.display = spelModus === 'blackjack' ? 'block' : 'none';
+    document.getElementById('host-view').style.display = 'block';
     ws.send(JSON.stringify({ type: 'joinSpectator' }));
   } else {
     document.getElementById('speler-lobby').style.display = 'block';
