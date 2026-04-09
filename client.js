@@ -205,7 +205,9 @@ function renderHostView(data) {
   const beurtSpeler = data.spelers.find(s => s.id === data.beurt);
   if (beurtSpeler) {
     const statusEl = document.getElementById('host-status-tekst');
-    if (data.moetPakken > 0) {
+    if (data.wachtOpKleur) {
+      statusEl.textContent = `${beurtSpeler.naam} kiest een kleur...`;
+    } else if (data.moetPakken > 0) {
       statusEl.textContent = `${beurtSpeler.naam} moet ${data.moetPakken} kaarten pakken!`;
     } else if (data.extraBeurt) {
       statusEl.textContent = `${beurtSpeler.naam} speelt een extra kaart...`;
@@ -226,7 +228,9 @@ function renderSpelerView(data) {
 
   const banner = document.getElementById('beurt-banner');
   if (mijnBeurt) {
-    if (data.moetPakken > 0) {
+    if (data.wachtOpKleur) {
+      banner.textContent = 'Kies een kleur voor de volgende speler!';
+    } else if (data.moetPakken > 0) {
       banner.textContent = `Je moet ${data.moetPakken} kaarten pakken! Leg een 2 of joker op, of klik het dek.`;
     } else {
       banner.textContent = data.extraBeurt ? 'Leg een 2e kaart of pak een kaart!' : 'Jouw beurt!';
@@ -255,6 +259,19 @@ function renderSpelerView(data) {
   }
   vorigeStapelTopId = top.id;
 
+  const gekozenKleurEl = document.getElementById('gekozen-kleur');
+  if (data.gekozenKleur) {
+    const isRood = data.gekozenKleur === '♥' || data.gekozenKleur === '♦';
+    gekozenKleurEl.textContent = `Actieve kleur: ${data.gekozenKleur}`;
+    gekozenKleurEl.className = 'gekozen-kleur-indicator' + (isRood ? ' rood' : '');
+    gekozenKleurEl.style.display = 'block';
+  } else {
+    gekozenKleurEl.style.display = 'none';
+  }
+
+  const kleurKiezer = document.getElementById('kleur-kiezer');
+  kleurKiezer.style.display = (data.wachtOpKleur && mijnBeurt) ? 'block' : 'none';
+
   const moetRoepen = data.moetLaatsteKaartRoepen || [];
   const ikMoetRoepen = moetRoepen.includes(mijnId);
   const anderenDieRoepenMoeten = moetRoepen.filter(id => id !== mijnId);
@@ -277,10 +294,10 @@ function renderSpelerView(data) {
   data.hand.forEach(kaart => {
     const isRood = kaart.kleur === '♥' || kaart.kleur === '♦';
     const isNieuw = !vorigeHandIds.has(kaart.id);
-    const speelbaar = mijnBeurt && (
+    const speelbaar = mijnBeurt && !data.wachtOpKleur && (
       data.moetPakken > 0
-        ? (kaart.waarde === '2' || kaart.waarde === 'JOKER') && kaartMagGespeeld(kaart, top)
-        : kaartMagGespeeld(kaart, top)
+        ? (kaart.waarde === '2' || kaart.waarde === 'JOKER') && kaartMagGespeeld(kaart, top, data.gekozenKleur)
+        : kaartMagGespeeld(kaart, top, data.gekozenKleur)
     );
     const isJoker = kaart.waarde === 'JOKER';
     const el = document.createElement('div');
@@ -297,18 +314,30 @@ function renderSpelerView(data) {
   vorigeHandIds = new Set(data.hand.map(k => k.id));
 }
 
-function kaartMagGespeeld(kaart, top) {
+function kaartMagGespeeld(kaart, top, gekozenKleur) {
   if (kaart.waarde === 'JOKER') return true;
   if (top.waarde === 'JOKER') return true;
-  return kaart.kleur === top.kleur || kaart.waarde === top.waarde;
+  const effectieveKleur = gekozenKleur || top.kleur;
+  return kaart.kleur === effectieveKleur || kaart.waarde === top.waarde;
+}
+
+function trillen(ms = 50) {
+  if (navigator.vibrate) navigator.vibrate(ms);
 }
 
 function speelKaart(kaartId) {
+  trillen(50);
   stuurNaarServer({ type: 'speelKaart', kaartId });
+}
+
+function kiesKleur(kleur) {
+  trillen(30);
+  stuurNaarServer({ type: 'kiesKleur', kleur });
 }
 
 function pakKaart() {
   if (!mijnBeurt) return;
+  trillen(30);
   stuurNaarServer({ type: 'pakKaart' });
 }
 
@@ -400,10 +429,12 @@ function kiesModus(modus) {
 }
 
 function bjHit() {
+  trillen(50);
   stuurNaarServer({ type: 'bjHit' });
 }
 
 function bjStand() {
+  trillen(30);
   stuurNaarServer({ type: 'bjStand' });
 }
 

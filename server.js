@@ -46,6 +46,8 @@ function maakNieuweLobby() {
     gestart: false,
     extraBeurt: false,
     moetPakken: 0,
+    wachtOpKleur: false,
+    gekozenKleur: null,
     moetLaatsteKaartRoepen: new Set(),
     winnen: {},
     spelModus: 'pesten',
@@ -112,7 +114,9 @@ function stuurSpelStatus(lobbyId) {
     })),
     extraBeurt: lobby.extraBeurt,
     dekAantal: lobby.dek.length,
-    moetLaatsteKaartRoepen: [...lobby.moetLaatsteKaartRoepen]
+    moetLaatsteKaartRoepen: [...lobby.moetLaatsteKaartRoepen],
+    wachtOpKleur: lobby.wachtOpKleur,
+    gekozenKleur: lobby.gekozenKleur
   };
   lobby.spelers.forEach(sp => {
     if (sp.ws.readyState === WebSocket.OPEN)
@@ -202,10 +206,11 @@ function bjDealerFase(lobbyId) {
   stuurBjStatus(lobbyId);
 }
 
-function kaartMagGespeeld(kaart, top) {
+function kaartMagGespeeld(kaart, top, gekozenKleur) {
   if (kaart.waarde === 'JOKER') return true;
   if (top.waarde === 'JOKER') return true;
-  return kaart.kleur === top.kleur || kaart.waarde === top.waarde;
+  const effectieveKleur = gekozenKleur || top.kleur;
+  return kaart.kleur === effectieveKleur || kaart.waarde === top.waarde;
 }
 
 // --- WebSocket verbindingen ---
@@ -315,6 +320,8 @@ wss.on('connection', (ws) => {
       lobby.stapel.push(lobby.dek.splice(0, 1)[0]);
       lobby.extraBeurt = false;
       lobby.moetPakken = 0;
+      lobby.wachtOpKleur = false;
+      lobby.gekozenKleur = null;
       lobby.moetLaatsteKaartRoepen = new Set();
       lobby.beurtIndex = 0;
       stuurSpelStatus(lobbyId);
@@ -356,18 +363,19 @@ wss.on('connection', (ws) => {
       const top = lobby.stapel[lobby.stapel.length - 1];
 
       if (lobby.moetPakken > 0) {
-        const kanStapelen = kaart && (kaart.waarde === '2' || kaart.waarde === 'JOKER') && kaartMagGespeeld(kaart, top);
+        const kanStapelen = kaart && (kaart.waarde === '2' || kaart.waarde === 'JOKER') && kaartMagGespeeld(kaart, top, lobby.gekozenKleur);
         if (!kanStapelen) {
           ws.send(JSON.stringify({ type: 'fout', bericht: 'Je moet kaarten pakken, een 2 opleggen of een joker opleggen!' }));
           return;
         }
-      } else if (!kaart || !kaartMagGespeeld(kaart, top)) {
+      } else if (!kaart || !kaartMagGespeeld(kaart, top, lobby.gekozenKleur)) {
         ws.send(JSON.stringify({ type: 'fout', bericht: 'Deze kaart mag je niet spelen!' }));
         return;
       }
 
       lobby.handen[id] = lobby.handen[id].filter(k => k.id !== data.kaartId);
       lobby.stapel.push(kaart);
+      lobby.gekozenKleur = null;
 
       if (lobby.handen[id].length === 1) {
         lobby.moetLaatsteKaartRoepen.add(id);
@@ -377,6 +385,8 @@ wss.on('connection', (ws) => {
         lobby.winnen[speler.naam] = (lobby.winnen[speler.naam] || 0) + 1;
         broadcastToLobby(lobbyId, { type: 'gewonnen', naam: speler.naam, wins: lobby.winnen[speler.naam] });
         lobby.gestart = false;
+        lobby.wachtOpKleur = false;
+        lobby.gekozenKleur = null;
         lobby.moetLaatsteKaartRoepen = new Set();
         lobby.spelers = []; lobby.handen = {}; lobby.dek = []; lobby.stapel = [];
         return;
@@ -394,6 +404,11 @@ wss.on('connection', (ws) => {
         lobby.beurtIndex = (lobby.beurtIndex + 2) % lobby.spelers.length;
       } else if (kaart.waarde === 'A') {
         lobby.beurtIndex = (lobby.beurtIndex + 2) % lobby.spelers.length;
+      } else if (kaart.waarde === 'J') {
+        lobby.extraBeurt = false;
+        lobby.wachtOpKleur = true;
+        stuurSpelStatus(lobbyId);
+        return;
       } else {
         lobby.beurtIndex = (lobby.beurtIndex + 1) % lobby.spelers.length;
       }
@@ -402,7 +417,20 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (data.type === 'kiesKleur') {
+      if (!lobby.wachtOpKleur) return;
+      if (lobby.spelers[lobby.beurtIndex]?.id !== id) return;
+      const geldigeKleuren = ['♠', '♥', '♦', '♣'];
+      if (!geldigeKleuren.includes(data.kleur)) return;
+      lobby.gekozenKleur = data.kleur;
+      lobby.wachtOpKleur = false;
+      lobby.beurtIndex = (lobby.beurtIndex + 1) % lobby.spelers.length;
+      stuurSpelStatus(lobbyId);
+      return;
+    }
+
     if (data.type === 'pakKaart') {
+      if (lobby.wachtOpKleur) return;
       if (lobby.spelers[lobby.beurtIndex]?.id !== id) return;
       lobby.extraBeurt = false;
       lobby.moetLaatsteKaartRoepen.delete(id);
